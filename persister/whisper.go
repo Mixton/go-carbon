@@ -38,6 +38,7 @@ type Whisper struct {
 	throttledCreates        uint32 // counter
 	updateOperations        uint32 // counter
 	committedPoints         uint32 // counter
+        removedPoints           uint32 // counter
 	extended                uint32 // counter
 	sparse                  bool
 	flock                   bool
@@ -241,7 +242,16 @@ func (p *Whisper) store(metric string) {
 
 		schema, ok := p.schemas.Match(metric)
 		if !ok {
-			p.logger.Error("no storage schema defined for metric", zap.String("metric", metric))
+			p.logger.Warn("no storage schema defined for metric", zap.String("metric", metric))
+                        values, exists := p.pop(metric)
+                        if !exists {
+                            return
+                        }
+                        if p.confirm != nil {
+                            defer p.confirm(values)
+                        }
+                        atomic.AddUint32(&p.removedPoints, uint32(len(values.Data)))
+                        p.logger.Warn("metric removed from cache", zap.String("metric", metric))
 			return
 		}
 
@@ -407,8 +417,10 @@ LOOP:
 func (p *Whisper) Stat(send helper.StatCallback) {
 	updateOperations := atomic.LoadUint32(&p.updateOperations)
 	committedPoints := atomic.LoadUint32(&p.committedPoints)
+        removedPoints := atomic.LoadUint32(&p.removedPoints)
 	atomic.AddUint32(&p.updateOperations, -updateOperations)
 	atomic.AddUint32(&p.committedPoints, -committedPoints)
+	atomic.AddUint32(&p.removedPoints, -removedPoints)
 
 	created := atomic.LoadUint32(&p.created)
 	atomic.AddUint32(&p.created, -created)
@@ -421,6 +433,7 @@ func (p *Whisper) Stat(send helper.StatCallback) {
 
 	send("updateOperations", float64(updateOperations))
 	send("committedPoints", float64(committedPoints))
+	send("removedPoints", float64(removedPoints))
 	if updateOperations > 0 {
 		send("pointsPerUpdate", float64(committedPoints)/float64(updateOperations))
 	} else {
